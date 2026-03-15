@@ -1,0 +1,3 @@
+# Inference server config for creative writing RL
+[model]
+enforce_eager = true

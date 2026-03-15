@@ -1,0 +1,20 @@
+# Online RL (GRPO) for creative writing
+# Run: cd prime-rl && uv run rl \
+#   --trainer @ ../configs/rl.toml \
+#   --orchestrator @ ../configs/orch.toml \
+#   --inference @ ../configs/infer.toml
+
+max_steps = 50
+seq_len = 2048
+
+[model]
+name = "Qwen/Qwen2.5-3B-Instruct"
+
+[wandb]
+project = "creative-writing-rl"
+name = "creative-writing-grpo"
+
+[trainer.optim]
+lr = 1e-6
+
+[ckpt]

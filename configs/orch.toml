@@ -1,0 +1,10 @@
+# Orchestrator config for creative writing RL
+batch_size = 32
+rollouts_per_example = 8
+
+[sampling]
+max_tokens = 512
+temperature = 0.7
+
+[[env]]
+id = "creative_writing"

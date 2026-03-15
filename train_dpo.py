@@ -1,23 +1,31 @@
-"""DPO training on LitBench-Train preference pairs.
+"""DPO training on preference pairs.
 
-Trains directly on (prompt, chosen_story, rejected_story) triples without
-a separate reward model. The model learns to produce text more like the
-higher-upvoted story and less like the lower-upvoted one.
+Supports multiple datasets:
+  - litbench:  SAA-Lab/LitBench-Train (43k r/WritingPrompts pairs)
+  - unslop:    qfennessy/unslop-dpo (1k de-slop pairs)
+  - Any HuggingFace dataset with prompt/chosen/rejected columns
 
 Usage:
-    # Single GPU
-    uv run python train_dpo.py
+    # Train on unslop dataset
+    uv run python train_dpo.py --dataset unslop
+
+    # Train on LitBench
+    uv run python train_dpo.py --dataset litbench
+
+    # Train on any HF dataset with prompt/chosen/rejected columns
+    uv run python train_dpo.py --dataset username/my-dataset
 
     # Multi-GPU
-    uv run accelerate launch train_dpo.py
+    uv run accelerate launch train_dpo.py --dataset unslop
 
     # Override defaults
     uv run python train_dpo.py \
+        --dataset unslop \
         --model_name Qwen/Qwen2.5-3B-Instruct \
         --beta 0.1 \
         --learning_rate 5e-7 \
         --num_train_epochs 1 \
-        --output_dir ./checkpoints/dpo-prose-v1
+        --output_dir ./checkpoints/dpo-unslop-v1
 """
 
 import argparse
@@ -25,9 +33,26 @@ import argparse
 from datasets import load_dataset
 from trl import DPOConfig, DPOTrainer
 
+DATASET_SHORTCUTS = {
+    "litbench": "SAA-Lab/LitBench-Train",
+    "unslop": "qfennessy/unslop-dpo",
+}
+
+SYSTEM_PROMPT = (
+    "You are a skilled creative writer. "
+    "Write vivid, emotionally resonant stories with strong voice and original detail. "
+    "Avoid clichés, purple prose, and AI-sounding phrasing."
+)
+
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="DPO training on LitBench-Train")
+    parser = argparse.ArgumentParser(description="DPO training on preference pairs")
+    parser.add_argument(
+        "--dataset",
+        type=str,
+        default="unslop",
+        help="Dataset name: 'litbench', 'unslop', or any HF dataset ID with prompt/chosen/rejected columns",
+    )
     parser.add_argument(
         "--model_name",
         type=str,
@@ -37,7 +62,7 @@ def parse_args():
     parser.add_argument(
         "--output_dir",
         type=str,
-        default="./checkpoints/dpo-prose-v1",
+        default="./checkpoints/dpo-v1",
         help="Directory to save checkpoints",
     )
     parser.add_argument(
@@ -80,7 +105,7 @@ def parse_args():
         "--max_examples",
         type=int,
         default=0,
-        help="Limit dataset size (0 = use all 43k pairs)",
+        help="Limit dataset size (0 = use all)",
     )
     parser.add_argument(
         "--eval_split",
@@ -91,28 +116,8 @@ def parse_args():
     return parser.parse_args()
 
 
-SYSTEM_PROMPT = (
-    "You are a skilled creative writer. "
-    "Write vivid, emotionally resonant stories with strong voice and original detail. "
-    "Avoid clichés, purple prose, and AI-sounding phrasing."
-)
-
-
-def format_as_chat(prompt_text: str, story: str) -> list[dict]:
-    """Format a prompt+story as chat messages for the tokenizer."""
-    return [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": prompt_text},
-        {"role": "assistant", "content": story},
-    ]
-
-
-def prepare_dataset(max_examples: int = 0, eval_split: float = 0.02):
-    """Load LitBench-Train and reshape for TRL's DPOTrainer.
-
-    TRL expects columns: prompt, chosen, rejected
-    where chosen/rejected are either strings or list[dict] chat messages.
-    """
+def prepare_litbench(max_examples: int = 0, eval_split: float = 0.02):
+    """Load LitBench-Train and reshape for TRL's DPOTrainer."""
     ds = load_dataset("SAA-Lab/LitBench-Train", split="train")
 
     if max_examples > 0:
@@ -130,21 +135,51 @@ def prepare_dataset(max_examples: int = 0, eval_split: float = 0.02):
         }
 
     ds = ds.map(reshape, remove_columns=ds.column_names)
+    return _maybe_split(ds, eval_split)
 
+
+def prepare_generic(dataset_id: str, max_examples: int = 0, eval_split: float = 0.02):
+    """Load any HF dataset with prompt/chosen/rejected columns."""
+    ds = load_dataset(dataset_id, split="train")
+
+    if max_examples > 0:
+        ds = ds.shuffle(seed=42).select(range(min(max_examples, len(ds))))
+
+    expected = {"prompt", "chosen", "rejected"}
+    actual = set(ds.column_names)
+    if not expected.issubset(actual):
+        missing = expected - actual
+        raise ValueError(
+            f"Dataset {dataset_id} missing columns: {missing}. "
+            f"Found: {actual}. Expected: {expected}"
+        )
+
+    # Drop extra columns
+    extra = actual - expected
+    if extra:
+        ds = ds.remove_columns(list(extra))
+
+    return _maybe_split(ds, eval_split)
+
+
+def _maybe_split(ds, eval_split: float):
     if eval_split > 0:
         split = ds.train_test_split(test_size=eval_split, seed=42)
         return split["train"], split["test"]
-
     return ds, None
 
 
 def main():
     args = parse_args()
 
-    train_ds, eval_ds = prepare_dataset(
-        max_examples=args.max_examples,
-        eval_split=args.eval_split,
-    )
+    dataset_id = DATASET_SHORTCUTS.get(args.dataset, args.dataset)
+    print(f"Dataset: {dataset_id}")
+
+    if dataset_id == "SAA-Lab/LitBench-Train":
+        train_ds, eval_ds = prepare_litbench(args.max_examples, args.eval_split)
+    else:
+        train_ds, eval_ds = prepare_generic(dataset_id, args.max_examples, args.eval_split)
+
     print(f"Train: {len(train_ds)} examples")
     if eval_ds:
         print(f"Eval:  {len(eval_ds)} examples")
