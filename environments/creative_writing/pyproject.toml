@@ -2,9 +2,12 @@
 name = "creative-writing"
 description = "Creative writing RL environment using LitBench BT reward model"
 tags = ["creative-writing", "prose", "train", "eval"]
-version = "0.1.0"
+version = "0.1.1"
 requires-python = ">=3.10"
-dependencies = [
+dependencies = []
+
+[project.optional-dependencies]
+runtime = [
     "verifiers>=0.1.10",
     "torch>=2.0.0",
     "transformers>=4.40.0",

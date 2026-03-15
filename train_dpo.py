@@ -21,7 +21,7 @@ Usage:
     # Override defaults
     uv run python train_dpo.py \
         --dataset unslop \
-        --model_name Qwen/Qwen2.5-3B-Instruct \
+        --model_name Qwen/Qwen3-VL-4B-Instruct \
         --beta 0.1 \
         --learning_rate 5e-7 \
         --num_train_epochs 1 \
@@ -29,6 +29,7 @@ Usage:
 """
 
 import argparse
+import os
 
 from datasets import load_dataset
 from trl import DPOConfig, DPOTrainer
@@ -113,6 +114,24 @@ def parse_args():
         default=0.02,
         help="Fraction of data to hold out for eval",
     )
+    parser.add_argument(
+        "--wandb_entity",
+        type=str,
+        default=None,
+        help="W&B entity (team or username). Enables W&B logging when set.",
+    )
+    parser.add_argument(
+        "--wandb_project",
+        type=str,
+        default="creative-writing-rl",
+        help="W&B project name",
+    )
+    parser.add_argument(
+        "--run_name",
+        type=str,
+        default=None,
+        help="W&B run name",
+    )
     return parser.parse_args()
 
 
@@ -184,6 +203,12 @@ def main():
     if eval_ds:
         print(f"Eval:  {len(eval_ds)} examples")
 
+    report_to = "none"
+    if args.wandb_entity:
+        os.environ["WANDB_ENTITY"] = args.wandb_entity
+        os.environ["WANDB_PROJECT"] = args.wandb_project
+        report_to = "wandb"
+
     config = DPOConfig(
         output_dir=args.output_dir,
         num_train_epochs=args.num_train_epochs,
@@ -193,11 +218,12 @@ def main():
         beta=args.beta,
         bf16=True,
         max_length=args.max_length,
-        logging_steps=50,
+        logging_steps=10,
         save_steps=500,
         eval_strategy="steps" if eval_ds else "no",
         eval_steps=500 if eval_ds else None,
-        report_to="none",
+        report_to=report_to,
+        run_name=args.run_name or f"dpo-{args.dataset}",
         remove_unused_columns=True,
     )
 

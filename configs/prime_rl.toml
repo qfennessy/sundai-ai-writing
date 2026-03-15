@@ -5,7 +5,7 @@
 #   2. prime env push creative-writing -p environments/creative_writing
 #   3. prime rl run configs/prime_rl.toml -e HF_TOKEN -e WANDB_API_KEY
 #
-model = "Qwen/Qwen2.5-3B-Instruct"
+model = "Qwen/Qwen3-VL-4B-Instruct"
 max_steps = 100
 
 batch_size = 32
@@ -21,7 +21,7 @@ id = "qfennessy/creative-writing"
 args = { num_examples = 5000 }
 
 [wandb]
-entity = "qfennessy"
+entity = "qfennessy-sagacious-heritage"
 project = "creative-writing-rl"
 name = "creative-writing-grpo-v1"
 
