@@ -1,74 +1,66 @@
 # my-writing-rl
 
-*Created: 2026-03-15*
+*Created: 2026-03-15 | Updated: 2026-03-15*
 
-RL-based creative writing training pipeline. Uses the [verifiers](https://github.com/PrimeIntellect-ai/verifiers) library to define an RL environment that scores LLM-generated stories with the [LitBench](https://huggingface.co/SAA-Lab/Creative-Writing-Verifier) Bradley-Terry reward model, trained via [prime-rl](https://github.com/PrimeIntellect-ai/prime-rl) (async GRPO with vLLM rollouts).
+Creative writing model training pipeline using preference learning on [LitBench-Train](https://huggingface.co/datasets/SAA-Lab/LitBench-Train) (43k r/WritingPrompts chosen/rejected story pairs).
 
-## How the Stack Connects
-
-```
-LitBench-Train dataset          →  prompts fed to policy model
-                                    (r/WritingPrompts writing prompts)
-
-Creative-Writing-Verifier (BT RM) →  reward function inside a verifiers Environment
-                                    (scores each generated story, returns 0.0–1.0)
-
-verifiers library               →  wraps dataset + reward into an Environment
-                                    that prime-rl knows how to consume
-
-prime-rl                        →  runs async GRPO, calls vLLM for rollouts,
-                                    calls the environment for rewards
-```
+Two training paths:
+1. **DPO (primary)** — trains directly on preference pairs, no reward model needed
+2. **Online RL (GRPO)** — uses a reward model + [verifiers](https://github.com/PrimeIntellect-ai/verifiers) environment + [prime-rl](https://github.com/PrimeIntellect-ai/prime-rl) for rollout-based training
 
 ## Setup
 
 ```bash
 # Requires Python 3.12+
 uv sync
+```
 
-# Install prime-rl (for training)
+## Path 1: DPO Training (recommended starting point)
+
+DPO learns directly from the chosen/rejected pairs — no reward model, no rollouts, roughly SFT-level compute. The model learns to produce text more like the higher-upvoted story and less like the lower-upvoted one.
+
+```bash
+# Single GPU (requires CUDA)
+uv run python train_dpo.py
+
+# With custom settings
+uv run python train_dpo.py \
+    --model_name Qwen/Qwen2.5-3B-Instruct \
+    --beta 0.1 \
+    --learning_rate 5e-7 \
+    --num_train_epochs 1 \
+    --output_dir ./checkpoints/dpo-prose-v1
+
+# Multi-GPU
+uv run accelerate launch train_dpo.py
+```
+
+Key hyperparameter: `--beta` controls KL penalty strength. Lower (0.05) = more aggressive improvement but higher collapse risk. Higher (0.2) = safer but smaller gains.
+
+### Quick test run
+
+```bash
+# Small subset to verify the pipeline works
+uv run python train_dpo.py --max_examples 100 --num_train_epochs 1
+```
+
+## Path 2: Online RL with Reward Model
+
+Graduate to this after DPO plateaus. Online RL can discover outputs not in the dataset, pushing past the DPO quality ceiling.
+
+Requires a reward model — either use `SAA-Lab/Creative-Writing-Verifier` or train a BT RM from LitBench-Train.
+
+```bash
+# Install prime-rl
 curl -sSL https://raw.githubusercontent.com/PrimeIntellect-ai/prime-rl/main/scripts/install.sh | bash
-```
 
-## Next Steps
-
-### 1. Calibrate the Reward Model
-
-Run a small batch of prompts through the BT reward model to verify sigmoid-normalized scores land in a useful range. Target a mean of 0.3-0.7 across samples. If scores cluster near 0 or 1, the normalization needs adjusting.
-
-```python
-from environments.creative_writing.creative_writing import build_dataset, score_with_litbench_rm
-
-ds = build_dataset(num_examples=20)
-for row in ds:
-    # Score a dummy story against each prompt to check the range
-    score = score_with_litbench_rm(row["question"], "Once upon a time, a story happened.")
-    print(f"score={score:.3f}")
-```
-
-### 2. Serve Inference and Run vf-eval
-
-Spin up vLLM with a small model and run the eval loop to confirm the full pipeline works end-to-end. This requires a CUDA GPU.
-
-```bash
-# Terminal 1: serve inference
-vllm serve Qwen/Qwen3-1.7B --port 8000
-
-# Terminal 2: eval against the environment
-uv run vf-eval creative_writing -m "Qwen/Qwen3-1.7B" -b "http://localhost:8000/v1" -n 50 -r 3
-```
-
-Watch the average reward. You want it landing in the 0.3-0.7 range — enough signal to learn from, not already saturated. If the model struggles to get non-zero rewards, consider SFT warmup first.
-
-### 3. Run GRPO Training via prime-rl
-
-Once the reward signal looks good:
-
-```bash
-# Terminal 1: inference worker
+# Serve inference
 vllm serve Qwen/Qwen3-1.7B --port 8000 --enable-prefix-caching
 
-# Terminal 2: training
+# Eval reward signal first (target 0.3-0.7 avg reward)
+uv run vf-eval creative_writing -m "Qwen/Qwen3-1.7B" -b "http://localhost:8000/v1" -n 50 -r 3
+
+# Train
 prime train \
   --env environments/creative_writing \
   --model Qwen/Qwen3-1.7B \
@@ -80,25 +72,32 @@ prime train \
   --output-dir ./checkpoints/creative-writing-v1
 ```
 
-### 4. Consider SFT Warmup
+## DPO vs Online RL Tradeoffs
 
-If the base model gets very low initial rewards, warm-start with supervised fine-tuning on the `chosen_story` column from LitBench-Train before running RL. Verifiers supports SFT warmup on filtered rollouts.
+| | DPO | Online RL (GRPO + RM) |
+|---|---|---|
+| Requires RM? | No | Yes |
+| Requires rollouts? | No | Yes |
+| Compute | ~SFT level | 3-5x more |
+| Data | Static pairs | Generates new data during training |
+| Exploration | None — learns from existing pairs only | Discovers outputs not in dataset |
+| Best for | Strong baseline fast | Pushing past dataset ceiling |
 
-### 5. Domain Adaptation for Coco's Story
+## Domain Adaptation for Coco's Story
 
-LitBench is r/WritingPrompts fiction. For oral/family history narrative (Coco's Story), you'll want to:
+LitBench is r/WritingPrompts fiction. For oral/family history narrative (Coco's Story):
 
 - Fine-tune the reward model on a small in-domain preference set, or
 - Add a second reward component (LLM judge with a family-history-specific rubric) weighted alongside the LitBench RM
 
 ## LitBench-Train Dataset Schema
 
-43,827 rows with these columns:
+43,827 rows:
 
 | Column | Type | Description |
 |---|---|---|
 | `prompt` | string | r/WritingPrompts prompt |
-| `chosen_story` | string | Higher-rated story |
+| `chosen_story` | string | Higher-rated story (more upvotes) |
 | `rejected_story` | string | Lower-rated story |
 | `chosen_upvotes` | int64 | Upvote count for chosen |
 | `rejected_upvotes` | int64 | Upvote count for rejected |
