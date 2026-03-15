@@ -205,3 +205,6 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Nested git repos (use `git submodule add` if you want to track these)
+prime-rl/
